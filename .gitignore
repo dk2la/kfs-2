@@ -1,0 +1,6 @@
+build/
+*.o
+*.bin
+*.iso
+en.subject.pdf
+.DS_Store
