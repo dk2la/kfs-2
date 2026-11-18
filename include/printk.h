@@ -2,7 +2,8 @@
 #define PRINTK_H
 
 /*
- * Formatted print to the active screen.
+ * Formatted print to the active screen. Every character is also written to
+ * I/O port 0xE9 (QEMU debugcon).
  *
  * Supported conversions:
  *   %c  character
@@ -13,7 +14,12 @@
  *   %p  pointer, as 0x followed by eight hexadecimal digits
  *   %%  a literal percent sign
  *
- * Widths, flags and length modifiers (%5d, %08x, %ld) are not supported.
+ * Each conversion takes an optional field width and the flags:
+ *   -   pad on the right instead of the left (%-10s)
+ *   0   pad numbers with zeros instead of spaces (%08x); the zeros go after
+ *       the sign or the 0x prefix
+ * Precision, '*' widths and length modifiers (%.3s, %*d, %ld) are not
+ * supported.
  *
  * Returns the number of characters written.
  */
