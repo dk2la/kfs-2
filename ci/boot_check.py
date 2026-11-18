@@ -143,6 +143,107 @@ def wait_for_boot(monitor, out_dir):
     return False
 
 
+def wait_for_quiet(path, quiet=1.0, timeout=BOOT_TIMEOUT):
+    """Wait until the file at `path` has stopped growing for `quiet` seconds."""
+    deadline = time.time() + timeout
+    size, since = -1, time.time()
+    while time.time() < deadline:
+        current = os.path.getsize(path) if os.path.exists(path) else 0
+        if current != size:
+            size, since = current, time.time()
+        elif time.time() - since >= quiet:
+            return
+        time.sleep(0.2)
+
+
+# ---- KFS_2 checks -------------------------------------------------------
+
+# (selector, access byte, DPL, name) of every descriptor, as gdt_print()
+# prints them.
+EXPECTED_GDT = [
+    (0x00, 0x00, 0, "null"),
+    (0x08, 0x9A, 0, "kernel code"),
+    (0x10, 0x92, 0, "kernel data"),
+    (0x18, 0x92, 0, "kernel stack"),
+    (0x23, 0xFA, 3, "user code"),
+    (0x2B, 0xF2, 3, "user data"),
+    (0x33, 0xF2, 3, "user stack"),
+]
+
+# Innermost first: the functions the backtrace frames return into.
+EXPECTED_BACKTRACE = ["stack_demo_b", "stack_demo_a", "kmain", "_start"]
+
+
+def check_registers(checks, registers):
+    """The CPU, seen from QEMU, uses our table at 0x800 and our selectors."""
+    checks.check("GDTR base 0x00000800 limit 0x37",
+                 re.search(r"^GDT=\s*00000800 00000037\b", registers, re.M) is not None)
+    for reg, sel in (("CS", 0x08), ("DS", 0x10), ("ES", 0x10), ("FS", 0x10),
+                     ("GS", 0x10), ("SS", 0x18)):
+        checks.check("%s = 0x%04x" % (reg, sel),
+                     re.search(r"^%s =%04x " % (reg, sel), registers, re.M) is not None)
+
+
+def check_gdt_dump(checks, log):
+    checks.check("kernel printed GDTR at 0x00000800",
+                 "GDTR: base=0x00000800 limit=0x0037 (7 descriptors)" in log)
+    for sel, access, dpl, name in EXPECTED_GDT:
+        limit = "00000" if sel == 0 else "fffff"
+        flags = "0x0" if sel == 0 else "0xc"
+        # The CPU sets bit 0 (accessed) of a descriptor when it loads it.
+        row = r"0x%02x\s+00000000\s+%s\s+0x(?:%02x|%02x)\s+%s\s+%d\s+%s\s*$" % (
+            sel, limit, access, access | 1, flags, dpl, re.escape(name))
+        checks.check("GDT dump row: %s" % name, re.search(row, log, re.M) is not None)
+
+
+def load_symbols(kernel):
+    """Function symbols of the kernel, as (address, name), sorted."""
+    out = subprocess.run(["nm", "-n", kernel], check=True, capture_output=True,
+                         text=True).stdout
+    symbols = []
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[1] in "Tt":
+            symbols.append((int(fields[0], 16), fields[2]))
+    return symbols
+
+
+def symbol_for(symbols, addr):
+    found = "??"
+    for start, name in symbols:
+        if start > addr:
+            break
+        found = name
+    return found
+
+
+def check_stack_dump(checks, log, kernel):
+    checks.check("kernel printed the stack header",
+                 re.search(r"^kernel stack: bottom=0x[0-9a-f]{8} top=0x[0-9a-f]{8}", log, re.M)
+                 is not None and re.search(r"^esp=0x[0-9a-f]{8} ebp=0x[0-9a-f]{8} in use=\d+ bytes",
+                                           log, re.M) is not None)
+    # The ASCII columns of the hexdump, joined: a string on the stack may
+    # straddle two lines.
+    ascii = "".join(re.findall(r"^0x[0-9a-f]{8}: (?:[0-9a-f]{8} ){4} (.{16})$", log, re.M))
+    checks.check("hexdump shows the demo arguments",
+                 "cafebabe" in log and "deadbeef" in log and "kfs-2!" in ascii)
+
+    frames = re.findall(r"#(\d+)\s+frame 0x([0-9a-f]{8})\s+return 0x([0-9a-f]{8})", log)
+    symbols = load_symbols(kernel)
+    print("---- backtrace, resolved with nm ----")
+    names = []
+    for depth, frame, ret in frames:
+        # ret - 1 is inside the call instruction, so inside the caller even
+        # when the call is the last instruction of a function.
+        name = symbol_for(symbols, int(ret, 16) - 1)
+        names.append(name)
+        print("#%s  frame 0x%s  return 0x%s  in %s" % (depth, frame, ret, name))
+    # A local label such as _start.halt still belongs to _start.
+    names = [n.split(".")[0] for n in names]
+    checks.check("backtrace is %s" % " <- ".join(EXPECTED_BACKTRACE),
+                 names == EXPECTED_BACKTRACE, " <- ".join(names))
+
+
 class Checks:
     def __init__(self):
         self.failed = 0
@@ -173,16 +274,18 @@ def run_qemu(iso, out_dir):
 def main():
     if len(sys.argv) != 4:
         sys.exit("usage: boot_check.py ISO KERNEL OUT_DIR")
-    iso, _kernel, out_dir = sys.argv[1:]
+    iso, kernel, out_dir = sys.argv[1:]
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     checks = Checks()
 
     qemu, sock_path = run_qemu(iso, out_dir)
-    monitor = Monitor(sock_path)
+    monitor = None
     try:
+        monitor = Monitor(sock_path)
         booted = wait_for_boot(monitor, out_dir)
         checks.check("kernel booted and printed 42", booted)
+        wait_for_quiet(os.path.join(out_dir, "debugcon.log"))
 
         registers = monitor.human("info registers")
         with open(os.path.join(out_dir, "registers.txt"), "w") as f:
@@ -193,7 +296,8 @@ def main():
         time.sleep(1)
         screen2 = save_screen(monitor, out_dir, "screen-2")
     finally:
-        monitor.quit()
+        if monitor:
+            monitor.quit()
         try:
             qemu.wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -203,7 +307,18 @@ def main():
     print("---- screen F1 ----\n" + "\n".join(screen1))
     print("---- screen F2 ----\n" + "\n".join(screen2))
 
+    with open(os.path.join(out_dir, "debugcon.log"), encoding="latin-1") as f:
+        log = f.read()
+
     checks.check("F2 switched to another screen", screen1 != screen2)
+    check_registers(checks, registers)
+    check_gdt_dump(checks, log)
+    check_stack_dump(checks, log, kernel)
+    checks.check("screen F1 shows the GDT dump",
+                 any(line.startswith("GDTR: base=0x00000800") for line in screen1))
+    checks.check("screen F2 shows the stack dump",
+                 any(line.startswith("kernel stack:") for line in screen2)
+                 and any(line.startswith("backtrace") for line in screen2))
 
     sys.exit(1 if checks.failed else 0)
 

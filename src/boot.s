@@ -2,7 +2,8 @@
 ;
 ; GRUB loads the kernel at 1 MiB, switches the CPU to 32-bit protected mode
 ; and jumps to _start. Nothing else is set up for us: in particular there is
-; no usable stack, so we provide our own before calling any C code.
+; no usable stack, so we provide our own before calling any C code, and the
+; GDT is GRUB's, so we load our own before kmain.
 
 ; Multiboot 1 header. GRUB scans the first 8 KiB of the file for it.
 MB_MAGIC	equ 0x1BADB002
@@ -19,6 +20,8 @@ STACK_SIZE	equ 16384
 
 section .bss
 alignb 16
+global stack_bottom
+global stack_top
 stack_bottom:
 	resb STACK_SIZE
 stack_top:
@@ -26,11 +29,14 @@ stack_top:
 section .text
 bits 32
 global _start
+extern gdt_init
 extern kmain
 
 _start:
 	mov esp, stack_top
+	xor ebp, ebp			; ends the frame chain for backtraces
 	cld				; C code expects the direction flag clear
+	call gdt_init			; our GDT at 0x800, segment registers reloaded
 	call kmain
 
 	; kmain returned: there is nothing left to run. Stop here for good.
