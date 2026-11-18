@@ -1,156 +1,158 @@
-# KFS_1 design
+# KFS_2 design
 
-This document records what we are building for the 42 project KFS_1 ("Grub, boot and screen"), how it is built, and how the work is carried out. It was agreed on 2026-11-17 and is the reference for implementation and review.
+This document records what we are building for the 42 project KFS_2 ("GDT & Stack"), how it is built and verified, and how the work is carried out. It was agreed on 2026-11-18 and is the reference for implementation and review.
 
 ## Goal
 
-A minimal i386 kernel that GRUB boots and that displays `42` on the screen.
+Give the KFS_1 kernel its own Global Descriptor Table, loaded at a fixed address, and a tool that prints the kernel stack in a human-friendly way.
 
 The subject requires:
 
-- a kernel bootable via GRUB
-- assembly boot code that carries a Multiboot header and calls the kernel's main function
-- kernel code compiled without any host library, linked with our own linker script
-- a small kernel library with basic types and functions (`strlen`, `strcmp`, ...)
-- an interface between the kernel and the screen
-- a Makefile that compiles every source with the right compiler and flags, then links the kernel binary
-- a bootable virtual image, with the whole work under 10 MB
+- a Global Descriptor Table containing kernel code, kernel data, kernel stack, user code, user data and user stack segments
+- the GDT declared to the CPU ("to the BIOS" in the subject's words) and set at address `0x00000800`
+- a tool that prints the kernel stack in a human-friendly way
+- the same build rules as KFS_1: our own linker script, no host library, a Makefile, a small bootable image, the whole work under 10 MB
 
 ## Scope
 
-**First delivery:** the mandatory part only. It was merged into `master` on 2026-11-17.
+**Mandatory part only.** The bonus (a debugging shell) is not built.
 
-**Second delivery:** the five bonuses (scroll and cursor, colours, `printk`, keyboard input, multiple screens), as a separate pull request. They are described under [Bonuses](#bonuses). The subject only grades bonuses when the mandatory part is perfect.
+The KFS_1 kernel, bonuses included, is the starting point: VGA output with scrolling, cursor and colours, `printk`, the polled PS/2 keyboard and the four virtual screens on F1 to F4 all stay. Only the boot demo in `kmain` changes.
 
-The code is laid out so that later KFS projects (memory, interrupts, processes) can build on it without a rewrite.
+## Constraint: no local testing
+
+The kernel is never built, run or tested on a local machine. Every build and every check runs on GitHub Actions, and results are read from the CI logs and artifacts. A change counts as working only when CI says so.
+
+## Repository and workflow
+
+| Topic | Decision |
+|---|---|
+| Repository | `dk2la/kfs-2`, public, separate from `dk2la/kfs-1` |
+| First commit | Import of `kfs-1` `master` as it stands, without its history |
+| Branches | `feature/*` → `develop` → `master`, as in KFS_1 |
+| Merging | A PR is merged only with green CI. Claude opens PRs; the owner reviews and merges. Claude never merges. |
+| Order of work | 1. this document; 2. PR `feature/ci` (CI on the imported KFS_1 code); 3. PR `feature/mandatory` (GDT, stack tool, CI checks for them); 4. `develop` → `master` |
 
 ## Technical decisions
 
+Everything from KFS_1 carries over unchanged unless listed here (C with NASM, i386, Multiboot 1, system `gcc -m32` and `ld -m elf_i386`, own `linker.ld`, ISO from `grub-mkrescue`).
+
 | Topic | Decision | Reason |
 |---|---|---|
-| Language | C, with NASM for the boot file | The subject's flags and nearly all OSDev material are in C |
-| Architecture | i386, 32-bit protected mode | Mandatory |
-| Boot protocol | Multiboot 1 (magic `0x1BADB002`) | Three-word header; QEMU can also load it directly with `-kernel` |
-| Compiler | System `gcc -m32` | No cross-compiler to build; one `apt install` for the evaluator |
-| Linker | System `ld -m elf_i386` with our own `linker.ld` | The subject forbids the host's linker script, not the host's `ld` |
-| Image | ISO built by `grub-mkrescue` | Needs no root or loop devices |
-| Screen | VGA text mode, memory at `0xB8000`, 80×25 | Available immediately after GRUB hands over, no driver setup needed |
-| Style | Plain kernel-style C: tabs, `snake_case`, one header per module | The 42 Norm is not required for KFS |
+| Segment model | Flat: every segment has base `0`, limit 4 GiB | Paging comes later; segmentation only has to separate privilege levels |
+| Stack segments | Plain read/write data segments, not expand-down | An expand-down segment with base 0 and a 4 GiB limit describes an empty range, so the first `push` would fault |
+| Where the table lives | Built in C, copied to `0x800` at run time with `memcpy`; GDTR points at `0x800` | Placing a linker section at `0x800` would ask GRUB to load an ELF segment into low memory, which it may refuse |
+| When it is loaded | From `_start`, right after the stack is set, before `kmain` | All C code of the kernel then runs on our segments, never on GRUB's |
+| Frame pointers | `-fno-omit-frame-pointer` added to `CFLAGS` | The backtrace walks the `ebp` chain |
+| Debug output | `printk` also writes every character to I/O port `0xE9` | QEMU's debugcon captures it to a file, so CI can read what the kernel printed. On real hardware the write is ignored. |
 
-`CC`, `LD` and `AS` stay overridable in the Makefile in case a cross-compiler is wanted later.
+### Why `0x800` is safe
 
-### Compiler flags
+Low memory on a PC: `0x000`–`0x3FF` is the real-mode interrupt vector table, `0x400`–`0x4FF` the BIOS data area, and `0x500`–`0x7BFF` is free conventional memory. The table takes 7 × 8 = 56 bytes, `0x800`–`0x837`, inside the free area. The kernel does not read the Multiboot information structure, so nothing it needs can be overwritten.
 
-```
--m32 -std=gnu99 -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -nostdlib -nodefaultlibs -Wall -Wextra -Werror
-```
+## GDT
 
-`-fno-pie` is needed because Debian and Ubuntu build position-independent code by default, which a kernel linked at a fixed address does not want.
+### Layout
 
-The subject also lists `-fno-exception` and `-fno-rtti`; those apply to C++ only and are not used.
+| Index | Selector | Segment | Access byte | DPL | Type |
+|---|---|---|---|---|---|
+| 0 | `0x00` | null | `0x00` | – | required by the CPU |
+| 1 | `0x08` | kernel code | `0x9A` | 0 | code, execute/read |
+| 2 | `0x10` | kernel data | `0x92` | 0 | data, read/write |
+| 3 | `0x18` | kernel stack | `0x92` | 0 | data, read/write |
+| 4 | `0x23` | user code | `0xFA` | 3 | code, execute/read |
+| 5 | `0x2B` | user data | `0xF2` | 3 | data, read/write |
+| 6 | `0x33` | user stack | `0xF2` | 3 | data, read/write |
 
-## Boot sequence
+User selectors include RPL 3 (`0x20 | 3`, ...). Every descriptor has limit `0xFFFFF` and flags `0xC` (4 KiB granularity, 32-bit), so it covers the full 4 GiB. The GDTR holds base `0x00000800` and limit `0x37` (56 − 1).
 
-1. The firmware starts GRUB from the ISO.
-2. GRUB reads `grub.cfg`, loads `kernel.bin`, and finds the Multiboot header in its first 8 KiB.
-3. GRUB places the kernel at 1 MiB, switches to 32-bit protected mode, and jumps to `_start`.
-4. `_start` (assembly) sets the stack pointer to our own stack and calls `kmain`.
-5. `kmain` (C) clears the screen and writes `42` through the screen module, then a colour sample and `printk` lines.
-6. `kmain` loops reading the keyboard. Should it ever return, `_start` disables interrupts and halts in a loop.
+### Loading sequence
+
+1. `_start` sets `esp` to `stack_top` and calls `gdt_init()`.
+2. `gdt_init()` (C) fills the seven descriptors and copies them to `0x800`.
+3. `gdt_flush` (assembly) runs `lgdt`, far-jumps to `0x08:.reload` to reload `CS`, then sets `DS`, `ES`, `FS` and `GS` to `0x10` and `SS` to `0x18`.
+4. `_start` calls `kmain`.
+
+`SS` is reloaded without moving `esp`: the stack segment is flat, so the same linear addresses stay valid.
+
+### GDT dump
+
+`gdt_print()` reads the GDTR with `sgdt` and prints its base and limit, then, for each descriptor, its selector, base, limit, access byte, flags, DPL and a name. It proves on screen that the table really is at `0x800` and is the one the CPU uses.
+
+## Kernel stack tool
+
+`print_kernel_stack()` prints:
+
+1. **Header:** `stack_bottom`, `stack_top`, current `esp` and `ebp`, and how many bytes are in use. `stack_bottom` and `stack_top` become `global` in `boot.s`.
+2. **Hexdump** of the used part only, from `esp` up to `stack_top`, one line per 16 bytes: address, four 32-bit words in hex, the same bytes as ASCII (`.` for non-printable). The output is capped to the height of a screen.
+3. **Backtrace** along the `ebp` chain: frame number, frame address, return address. The walk stops at a null `ebp` or when `ebp` leaves the kernel stack.
+
+Return addresses are printed as numbers only; the kernel carries no symbol table. CI resolves them to function names (see below).
+
+To give the dump something to show, `kmain` calls a short demo chain, `kmain → stack_demo_a(0xCAFEBABE, …) → stack_demo_b(0xDEADBEEF, …) → print_kernel_stack()`. The recognisable arguments and several frames appear in the hexdump and the backtrace.
+
+## `printk` changes
+
+Added: a field width and the `0` and `-` flags, for example `%08x`, `%4u`, `%-10s`, so that the dumps line up. Length modifiers (`%ld`) are still not supported.
+
+## What the kernel shows
+
+| Screen | Content |
+|---|---|
+| F1 (shown at boot) | `42`, then the GDT dump |
+| F2 | The kernel stack dump |
+| F3, F4 | Free typing, as in KFS_1 |
+
+The KFS_1 boot demo (colour sample, `printk` examples) is removed. After boot `kmain` stays in the keyboard loop, as before.
 
 ## Layout
 
+New and changed files compared with KFS_1:
+
 ```
-Makefile
-linker.ld            places the Multiboot header first, kernel at 1 MiB
-grub.cfg             one menu entry: multiboot /boot/kernel.bin
+.github/workflows/ci.yml   build, boot and check in QEMU
+docs/DESIGN.md             this document
 src/
-  boot.s             Multiboot header, stack, _start
-  kernel.c           kmain: boot messages, then the keyboard loop
-  vga.c              screen: write, colours, scrolling, cursor, virtual screens
-  keyboard.c         PS/2 keyboard, read by polling
-lib/
-  string.c           strlen, strcmp, memset, memcpy
-  printk.c           formatted print
+  boot.s                   calls gdt_init before kmain; stack symbols global
+  gdt.c                    builds the GDT, copies it to 0x800, prints it
+  gdt_flush.s              lgdt, far jump, segment register reload
+  stack.c                  print_kernel_stack and the demo call chain
+  kernel.c                 new boot demo: screens F1 and F2
 include/
-  types.h            fixed-width integer types, size_t
-  io.h               inb, outb
-  stdarg.h           variadic arguments, from compiler builtins
-  vga.h
-  keyboard.h
-  printk.h
-  string.h
-docs/
-  DESIGN.md          this document
-README.md            dependencies, build, run, boot walkthrough
+  gdt.h
+  stack.h
+lib/
+  printk.c                 width and flags; mirror to port 0xE9
+Makefile                   new sources, -fno-omit-frame-pointer
+README.md                  GDT, stack dump, CI
 ```
 
-Build output goes to `build/` and is ignored by git.
+## Continuous integration
 
-## Bonuses
+A GitHub Actions workflow runs on every push and every pull request, on `ubuntu-latest`.
 
-| Bonus | Decision | Reason |
+1. Install the packages listed in the README.
+2. `make` and `make iso`.
+3. Fail if the ISO is 10 MB or larger.
+4. Boot the ISO in `qemu-system-i386` with no display, debugcon to a log file and the QEMU monitor reachable from the script. The kernel is the normal one: there is no test mode. CI waits a few seconds, collects the results below, then kills QEMU.
+5. Upload the ISO, the screenshots, the debugcon log and the monitor output as artifacts.
+
+### Checks
+
+| Check | How | What it proves |
 |---|---|---|
-| Scrolling | Past the last row, every row moves up by one and the last is blanked | The simplest behaviour that keeps the newest output visible |
-| Cursor | The hardware VGA cursor, moved through the CRT controller ports `0x3D4`/`0x3D5` after every write | No drawing code needed; the card blinks it for us |
-| Colours | `vga_set_color(fg, bg)` with the 16 VGA colours; each screen keeps its own | Matches the attribute byte of a text cell exactly |
-| Blinking | Turned off in the VGA attribute controller at start-up | The blink bit otherwise takes the top background bit, leaving 8 backgrounds |
-| Backspace | Erases typed text only, and returns to the end of the previous line across a newline | Kernel output such as `42` cannot be erased by accident |
-| `printk` | `%c %s %d %u %x %p %%`, writing through the screen module | Enough to print values while debugging later KFS projects |
-| Variadic arguments | Our own `stdarg.h` over `__builtin_va_*` | No host header may be used |
-| Keyboard | PS/2, scancode set 1, US layout, polled on ports `0x60`/`0x64` | Interrupts need an IDT, which belongs to a later KFS project |
-| Screens | Four virtual screens, switched with `F1` to `F4` | Plain function keys are not intercepted by the host, unlike `Alt+F4` |
+| GDTR, from outside the kernel | Monitor `info registers` must show `GDT=00000800 00000037`, `CS=0008`, `DS=0010`, `SS=0018` | The CPU uses our table at `0x800`, with our selectors loaded |
+| Kernel output | grep the debugcon log for the GDT dump, the stack dump header and the backtrace | The kernel printed both dumps |
+| Screen | `screendump` of screen F1, then `sendkey f2` and `screendump` of screen F2, saved as PNG | What the evaluator will see |
+| Backtrace symbols | Return addresses from the log resolved with `addr2line`/`nm` on `kernel.bin`, written to the CI log | The frames are the expected functions |
 
-Each virtual screen has a backing copy of its 80×25 cells, its write position and its colours. Output always goes to the active screen, and is written to both its backing copy and VGA memory. Switching copies the new screen's backing copy to VGA memory and moves the cursor.
+PR `feature/ci` only adds steps 1–5 with a boot check of the imported KFS_1 kernel. PR `feature/mandatory` adds the GDT, kernel output and backtrace checks.
 
-Polling means the kernel spins in a loop while waiting for a key, so the emulated CPU stays busy. That goes away when interrupts arrive.
+## Defence checklist
 
-## Build and run
-
-Target platform: Debian or Ubuntu on x86_64, with packages installable through `apt`. Nothing is installed or run on macOS.
-
-Packages: `make`, `nasm`, `gcc`, `gcc-multilib`, `grub-pc-bin`, `grub-common`, `xorriso`, `mtools`, `qemu-system-x86`.
-
-| Command | Effect |
-|---|---|
-| `make` | Compile and link `kernel.bin` |
-| `make iso` | Build the bootable ISO |
-| `make run` | Boot the ISO in QEMU, drawing the emulated screen as text in the terminal |
-| `make clean` / `make fclean` | Remove objects / remove all build output |
-| `make re` | Rebuild from scratch |
-
-### Image size
-
-A default `grub-mkrescue` ISO can approach or exceed the 10 MB limit. The ISO is built with a restricted set of GRUB modules and without locales, themes or fonts, which brings it to about 0.8 MB. Compression is not used: `grub-mkrescue --compress` fails when combined with a restricted module list. The final size is checked as part of verification.
-
-## Turn-in
-
-- The ISO is built by `make iso` and is **not** committed to the GitHub repository (`*.iso` is in `.gitignore`).
-- The subject asks for a virtual image to be turned in. If a separate 42 turn-in repository exists, the owner adds one built ISO there before defence.
-- The subject PDF is ignored by git.
-
-## How the work is carried out
-
-- **Authorship:** Claude writes all code; the owner reviews at the end.
-- **Repository:** the owner creates the GitHub repository with `master` and `develop` and connects this folder. No git action happens before that.
-- **Branching:** Claude branches from `develop`, commits and pushes there, merges into `develop`, then opens one pull request from `develop` to `master` for review.
-- **Commits:** several small commits, one per step: boot code and linker script, screen driver, library, Makefile and ISO, README.
-- **Attribution:** no Claude lines in commit messages or in the pull request; commits use the owner's git identity.
-
-## Verification
-
-Before the pull request is opened, a cloud Linux agent working on the pushed branch must show that:
-
-1. `make re` and `make iso` succeed with no warnings.
-2. The kernel binary is a valid Multiboot image (`grub-file --is-x86-multiboot`).
-3. The ISO boots in QEMU and the emulated screen shows `42`, with a screenshot kept as proof.
-4. The ISO and the repository are each under 10 MB.
-
-Fallback: if the cloud sandbox cannot install the packages, the same checks run in a Linux container through the Docker already present on the owner's Mac. The owner is told before the fallback is used.
-
-The bonuses are verified the same way: keys are sent through the QEMU monitor (`sendkey`), the VGA text buffer is read back with `pmemsave`, and the cursor position is read from the CRT controller.
-
-## Open items
-
-- The cloud sandbox was not available, so verification runs in the Docker fallback.
-- A built ISO still has to be added to the 42 turn-in repository before defence.
+- The GDT has the six required segments plus the null descriptor (F1 screen, `include/gdt.h`).
+- It is at `0x00000800` (F1 screen and CI `info registers`).
+- It is loaded with `lgdt` and the segment registers point into it (CI `info registers`).
+- The kernel stack is printed in a human-friendly way (F2 screen).
+- The ISO is under 10 MB (CI step 3).
+- No host library or host linker script (Makefile flags, own `linker.ld`).
