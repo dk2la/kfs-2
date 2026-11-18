@@ -102,6 +102,12 @@ void print_kernel_stack(void)
 	backtrace(ebp);
 }
 
+/*
+ * The demo relies on every call being a real call with its own frame: the
+ * kernel is built without -O, so there is no inlining, no tail call and the
+ * arguments stay on the stack. With optimisation, print_kernel_stack()
+ * could become a jump and stack_demo_b would vanish from the backtrace.
+ */
 static void __attribute__((noinline)) stack_demo_b(uint32_t magic,
 						   const char *tag)
 {

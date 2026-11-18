@@ -32,7 +32,7 @@ static void prepare_screens(void)
 		else
 			printk("screen %u - type something\n", i + 1);
 	}
-	vga_switch_screen(0);
+	vga_switch_screen(SCREEN_GDT);
 }
 
 /*

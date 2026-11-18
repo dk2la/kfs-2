@@ -190,8 +190,9 @@ def check_gdt_dump(checks, log):
     for sel, access, dpl, name in EXPECTED_GDT:
         limit = "00000" if sel == 0 else "fffff"
         flags = "0x0" if sel == 0 else "0xc"
-        row = r"0x%02x\s+00000000\s+%s\s+0x%02x\s+%s\s+%d\s+%s\s*$" % (
-            sel, limit, access, flags, dpl, re.escape(name))
+        # The CPU sets bit 0 (accessed) of a descriptor when it loads it.
+        row = r"0x%02x\s+00000000\s+%s\s+0x(?:%02x|%02x)\s+%s\s+%d\s+%s\s*$" % (
+            sel, limit, access, access | 1, flags, dpl, re.escape(name))
         checks.check("GDT dump row: %s" % name, re.search(row, log, re.M) is not None)
 
 
@@ -221,8 +222,11 @@ def check_stack_dump(checks, log, kernel):
                  re.search(r"^kernel stack: bottom=0x[0-9a-f]{8} top=0x[0-9a-f]{8}", log, re.M)
                  is not None and re.search(r"^esp=0x[0-9a-f]{8} ebp=0x[0-9a-f]{8} in use=\d+ bytes",
                                            log, re.M) is not None)
+    # The ASCII columns of the hexdump, joined: a string on the stack may
+    # straddle two lines.
+    ascii = "".join(re.findall(r"^0x[0-9a-f]{8}: (?:[0-9a-f]{8} ){4} (.{16})$", log, re.M))
     checks.check("hexdump shows the demo arguments",
-                 "cafebabe" in log and "deadbeef" in log and "kfs-2!" in log)
+                 "cafebabe" in log and "deadbeef" in log and "kfs-2!" in ascii)
 
     frames = re.findall(r"#(\d+)\s+frame 0x([0-9a-f]{8})\s+return 0x([0-9a-f]{8})", log)
     symbols = load_symbols(kernel)
@@ -276,8 +280,9 @@ def main():
     checks = Checks()
 
     qemu, sock_path = run_qemu(iso, out_dir)
-    monitor = Monitor(sock_path)
+    monitor = None
     try:
+        monitor = Monitor(sock_path)
         booted = wait_for_boot(monitor, out_dir)
         checks.check("kernel booted and printed 42", booted)
         wait_for_quiet(os.path.join(out_dir, "debugcon.log"))
@@ -291,7 +296,8 @@ def main():
         time.sleep(1)
         screen2 = save_screen(monitor, out_dir, "screen-2")
     finally:
-        monitor.quit()
+        if monitor:
+            monitor.quit()
         try:
             qemu.wait(timeout=10)
         except subprocess.TimeoutExpired:
