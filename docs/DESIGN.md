@@ -66,6 +66,8 @@ Low memory on a PC: `0x000`–`0x3FF` is the real-mode interrupt vector table, `
 
 User selectors include RPL 3 (`0x20 | 3`, ...). Every descriptor has limit `0xFFFFF` and flags `0xC` (4 KiB granularity, 32-bit), so it covers the full 4 GiB. The GDTR holds base `0x00000800` and limit `0x37` (56 − 1).
 
+The access bytes above are what `gdt_init()` writes. When a segment register is loaded, the CPU sets bit 0 (accessed) of that descriptor in the table, so the dump on screen F1 shows `0x93` for kernel data and kernel stack. CI accepts either value.
+
 ### Loading sequence
 
 1. `_start` sets `esp` to `stack_top` and calls `gdt_init()`.
