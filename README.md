@@ -70,7 +70,17 @@ include/
 docs/
   DESIGN.md
   screenshots/
+ci/
+  boot_check.py  boots the ISO in QEMU for CI and checks it
+.github/workflows/
+  ci.yml         GitHub Actions: build, size check, boot check
 ```
+
+## Continuous integration
+
+Every push and pull request runs `.github/workflows/ci.yml` on GitHub Actions: it installs the packages above, runs `make` and `make iso`, fails if the ISO is 10 MB or larger, then runs `ci/boot_check.py`.
+
+`ci/boot_check.py` boots the ISO in `qemu-system-i386` without a display, drives the QEMU monitor through a Unix socket and checks the result. It saves `info registers`, a screenshot and the text of screen F1, then presses F2 and does the same for screen F2. Everything the kernel writes to port `0xE9` is captured by QEMU's debugcon. The ISO, the kernel and these files are uploaded as the `kfs-ci` artifact of the run.
 
 ## The screen
 
