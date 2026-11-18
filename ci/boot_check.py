@@ -5,7 +5,7 @@ Run by GitHub Actions after `make iso`:
 
     python3 ci/boot_check.py build/kfs.iso build/kernel.bin ci-out
 
-QEMU runs headless. Its monitor is reached through a Unix socket and the
+QEMU runs headless. Its monitor (QMP) is reached through a Unix socket and the
 kernel's port 0xE9 output (QEMU debugcon) goes to a file. The script waits
 for the kernel to print `42`, then collects into the output directory:
 
@@ -19,6 +19,7 @@ for the kernel to print `42`, then collects into the output directory:
 Each check prints PASS or FAIL. The exit status is 1 if any check failed.
 """
 
+import json
 import os
 import re
 import socket
@@ -32,13 +33,10 @@ VGA_ADDR = 0xB8000
 VGA_WIDTH = 80
 VGA_HEIGHT = 25
 BOOT_TIMEOUT = 30
-PROMPT = b"(qemu) "
-# Terminal control sequences the monitor mixes into its output.
-ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[A-Za-z]|\r")
 
 
 class Monitor:
-    """A QEMU human monitor reached through a Unix socket."""
+    """QEMU's QMP monitor (JSON, one message per line) on a Unix socket."""
 
     def __init__(self, path):
         deadline = time.time() + 10
@@ -52,31 +50,38 @@ class Monitor:
                 if time.time() > deadline:
                     raise
                 time.sleep(0.2)
-        self.sock.settimeout(10)
-        self._read_until_prompt()
+        self.sock.settimeout(30)
+        self.reader = self.sock.makefile("r", encoding="utf-8")
+        self._read_message()  # greeting
+        self.execute("qmp_capabilities")
 
-    def _read_until_prompt(self):
-        data = b""
-        while not data.endswith(PROMPT):
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("QEMU monitor closed the connection")
-            data += chunk
-        return data[: -len(PROMPT)]
+    def _read_message(self):
+        line = self.reader.readline()
+        if not line:
+            raise RuntimeError("QEMU monitor closed the connection")
+        return json.loads(line)
 
-    def command(self, line):
-        self.sock.sendall(line.encode() + b"\n")
-        text = ANSI_ESCAPE.sub("", self._read_until_prompt().decode("latin-1"))
-        # The monitor echoes the command line first.
-        lines = text.split("\n")
-        if lines and lines[0].strip() == line:
-            lines = lines[1:]
-        return "\n".join(lines).strip("\n")
+    def execute(self, command, **arguments):
+        request = {"execute": command}
+        if arguments:
+            request["arguments"] = arguments
+        self.sock.sendall(json.dumps(request).encode() + b"\n")
+        while True:
+            reply = self._read_message()
+            if "return" in reply:
+                return reply["return"]
+            if "error" in reply:
+                raise RuntimeError("%s failed: %s" % (command, reply["error"]))
+            # Anything else is an asynchronous event: skip it.
+
+    def human(self, line):
+        """Run a human monitor command, such as `info registers`."""
+        return self.execute("human-monitor-command", **{"command-line": line})
 
     def quit(self):
         try:
-            self.sock.sendall(b"quit\n")
-        except OSError:
+            self.execute("quit")
+        except (OSError, RuntimeError):
             pass
         self.sock.close()
 
@@ -84,7 +89,7 @@ class Monitor:
 def read_screen(monitor, out_dir, name):
     """Return the 25 lines of text currently in VGA memory."""
     dump = os.path.join(out_dir, name + ".vga")
-    monitor.command("pmemsave 0x%x %d %s" % (VGA_ADDR, VGA_WIDTH * VGA_HEIGHT * 2, dump))
+    monitor.execute("pmemsave", val=VGA_ADDR, size=VGA_WIDTH * VGA_HEIGHT * 2, filename=dump)
     with open(dump, "rb") as f:
         cells = f.read()
     os.remove(dump)
@@ -119,7 +124,7 @@ def ppm_to_png(ppm_path, png_path):
 
 def save_screen(monitor, out_dir, name):
     ppm = os.path.join(out_dir, name + ".ppm")
-    monitor.command("screendump %s" % ppm)
+    monitor.execute("screendump", filename=ppm)
     ppm_to_png(ppm, os.path.join(out_dir, name + ".png"))
     os.remove(ppm)
     lines = read_screen(monitor, out_dir, name)
@@ -157,7 +162,7 @@ def run_qemu(iso, out_dir):
             "qemu-system-i386",
             "-cdrom", iso,
             "-display", "none",
-            "-monitor", "unix:%s,server,nowait" % sock_path,
+            "-qmp", "unix:%s,server,nowait" % sock_path,
             "-debugcon", "file:%s" % os.path.join(out_dir, "debugcon.log"),
             "-no-reboot",
         ]
@@ -179,12 +184,12 @@ def main():
         booted = wait_for_boot(monitor, out_dir)
         checks.check("kernel booted and printed 42", booted)
 
-        registers = monitor.command("info registers")
+        registers = monitor.human("info registers")
         with open(os.path.join(out_dir, "registers.txt"), "w") as f:
-            f.write(registers + "\n")
+            f.write(registers)
 
         screen1 = save_screen(monitor, out_dir, "screen-1")
-        monitor.command("sendkey f2")
+        monitor.human("sendkey f2")
         time.sleep(1)
         screen2 = save_screen(monitor, out_dir, "screen-2")
     finally:
