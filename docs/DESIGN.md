@@ -111,6 +111,7 @@ New and changed files compared with KFS_1:
 
 ```
 .github/workflows/ci.yml   build, boot and check in QEMU
+ci/boot_check.py           drives QEMU through QMP and runs the checks
 docs/DESIGN.md             this document
 src/
   boot.s                   calls gdt_init before kmain; stack symbols global

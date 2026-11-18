@@ -1,41 +1,16 @@
+#include "gdt.h"
 #include "keyboard.h"
 #include "printk.h"
+#include "stack.h"
 #include "types.h"
 #include "vga.h"
 
-/* One digit per VGA colour, each drawn in that colour. */
-static void show_colours(void)
-{
-	size_t colour;
+/* What each screen shows at boot. */
+#define SCREEN_GDT	0	/* F1: 42 and the GDT dump */
+#define SCREEN_STACK	1	/* F2: the kernel stack dump */
 
-	vga_write("colours: ");
-	for (colour = VGA_BLACK; colour <= VGA_WHITE; colour++) {
-		/* Black would be invisible on the black background. */
-		vga_set_color(colour,
-			      colour == VGA_BLACK ? VGA_LIGHT_GREY : VGA_BLACK);
-		printk("%x", colour);
-	}
-	/* The same digits again, as background colours. */
-	vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-	vga_putchar(' ');
-	for (colour = VGA_BLACK; colour <= VGA_WHITE; colour++) {
-		vga_set_color(colour < VGA_DARK_GREY ? VGA_WHITE : VGA_BLACK,
-			      colour);
-		printk("%x", colour);
-	}
-	vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-	vga_putchar('\n');
-}
-
-static void show_printk(void)
-{
-	const char *missing = NULL;
-
-	printk("printk: %c %s %d %u %x %p %%\n",
-	       'k', "str", -2147483647 - 1, 4294967295u, 0x2a,
-	       (void *)0xb8000);
-	printk("printk: %s %d\n", missing, 0);
-}
+/* Recognisable argument for the stack demo, easy to find in the hexdump. */
+#define STACK_DEMO_MAGIC	0xCAFEBABE
 
 _Static_assert(VGA_SCREENS <= KEY_F4 - KEY_F1 + 1,
 	       "every screen needs a function key to reach it");
@@ -52,7 +27,10 @@ static void prepare_screens(void)
 		vga_switch_screen(i);
 		vga_set_color(VGA_WHITE, backgrounds[i]);
 		vga_clear();
-		printk("screen %u\n", i + 1);
+		if (i == SCREEN_STACK)
+			printk("screen %u - kernel stack\n", i + 1);
+		else
+			printk("screen %u - type something\n", i + 1);
 	}
 	vga_switch_screen(0);
 }
@@ -75,19 +53,25 @@ static void echo_key(size_t screen, char c)
 	vga_putchar(c);
 }
 
-/* Called from _start (src/boot.s) once the stack is set up. */
+/*
+ * Called from _start (src/boot.s), once the stack is set up and our GDT is
+ * loaded.
+ */
 void kmain(void)
 {
 	size_t screen = 0;
 	int key;
 
 	vga_init();
-	vga_write("42\n");
-	show_colours();
-	show_printk();
-	printk("screen 1 - type something, F1 to F%d switch screens\n",
-	       VGA_SCREENS);
+	printk("42\n");
+	gdt_print();
+	printk("F1 GDT, F2 kernel stack, F3 and F4 free typing\n");
 	prepare_screens();
+
+	/* Called from here, so that kmain is one of the frames shown. */
+	vga_switch_screen(SCREEN_STACK);
+	stack_demo_a(STACK_DEMO_MAGIC);
+	vga_switch_screen(SCREEN_GDT);
 
 	for (;;) {
 		key = keyboard_read();
