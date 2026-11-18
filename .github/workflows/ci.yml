@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make nasm gcc gcc-multilib grub-pc-bin grub-common xorriso mtools \
+            qemu-system-x86
+
+      - name: Build kernel
+        run: make
+
+      - name: Build ISO
+        run: make iso
+
+      - name: ISO is under 10 MB
+        run: |
+          size=$(stat -c %s build/kfs.iso)
+          echo "build/kfs.iso: $size bytes"
+          test "$size" -lt 10000000
+
+      - name: Boot in QEMU and check
+        run: python3 ci/boot_check.py build/kfs.iso build/kernel.bin ci-out
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kfs-ci
+          path: |
+            build/kfs.iso
+            build/kernel.bin
+            ci-out/*.png
+            ci-out/*.txt
+            ci-out/*.log
+          if-no-files-found: warn
