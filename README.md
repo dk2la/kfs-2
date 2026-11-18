@@ -82,7 +82,7 @@ Every segment is flat: base `0`, limit `0xFFFFF` with 4 KiB granularity, so it c
 
 `lgdt` alone would change nothing visible: the CPU keeps using the descriptors cached in the segment registers until they are reloaded.
 
-`gdt_print()` asks the CPU where its table is (`sgdt`) and prints the GDTR, then every descriptor it finds there: selector, base, limit, access byte, flags, DPL and name. This shows that the table really is at `0x800` and is the one in use.
+`gdt_print()` asks the CPU where its table is (`sgdt`) and prints the GDTR, then every descriptor it finds there: selector, base, limit, access byte, flags, DPL and name. This shows that the table really is at `0x800` and is the one in use. The kernel data and stack segments show access `0x93`, not `0x92`: the CPU sets bit 0 (accessed) of a descriptor when it loads it into a segment register.
 
 ## The kernel stack tool
 

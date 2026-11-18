@@ -25,6 +25,8 @@ _Static_assert(sizeof(struct gdt_ptr) == 6, "the GDTR operand is 6 bytes");
 /*
  * Access byte: present (0x80), DPL in bits 5-6, code/data descriptor
  * (0x10), then the type: 0xA = code, execute/read; 0x2 = data, read/write.
+ * The CPU sets bit 0 (accessed) the first time it loads a segment, so the
+ * dump shows 0x93 for the kernel data and stack segments.
  * Stack segments are plain read/write data: an expand-down segment with
  * base 0 and a 4 GiB limit would describe an empty range.
  */
@@ -37,6 +39,9 @@ _Static_assert(sizeof(struct gdt_ptr) == 6, "the GDTR operand is 6 bytes");
 #define FLAGS_FLAT		0xC
 /* With 4 KiB granularity, 0xFFFFF pages cover the full 4 GiB. */
 #define LIMIT_FLAT		0xFFFFF
+
+/* A selector is the descriptor index times 8, plus the RPL in bits 0-1. */
+#define INDEX(selector)		((selector) >> 3)
 
 /* src/gdt_flush.s: lgdt, far jump to reload CS, reload the data registers. */
 void	gdt_flush(const struct gdt_ptr *gdtr);
@@ -71,12 +76,18 @@ void gdt_init(void)
 	struct gdt_ptr gdtr;
 
 	table[0] = make_entry(0, 0, 0, 0);
-	table[1] = make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_CODE, FLAGS_FLAT);
-	table[2] = make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_DATA, FLAGS_FLAT);
-	table[3] = make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_DATA, FLAGS_FLAT);
-	table[4] = make_entry(0, LIMIT_FLAT, ACCESS_USER_CODE, FLAGS_FLAT);
-	table[5] = make_entry(0, LIMIT_FLAT, ACCESS_USER_DATA, FLAGS_FLAT);
-	table[6] = make_entry(0, LIMIT_FLAT, ACCESS_USER_DATA, FLAGS_FLAT);
+	table[INDEX(GDT_KERNEL_CODE)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_CODE, FLAGS_FLAT);
+	table[INDEX(GDT_KERNEL_DATA)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_DATA, FLAGS_FLAT);
+	table[INDEX(GDT_KERNEL_STACK)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_KERNEL_DATA, FLAGS_FLAT);
+	table[INDEX(GDT_USER_CODE)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_USER_CODE, FLAGS_FLAT);
+	table[INDEX(GDT_USER_DATA)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_USER_DATA, FLAGS_FLAT);
+	table[INDEX(GDT_USER_STACK)] =
+		make_entry(0, LIMIT_FLAT, ACCESS_USER_DATA, FLAGS_FLAT);
 
 	memcpy((void *)GDT_ADDRESS, table, sizeof(table));
 	gdtr.limit = sizeof(table) - 1;

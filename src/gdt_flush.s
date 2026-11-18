@@ -6,6 +6,7 @@
 ; cached in the segment registers until each one is reloaded. CS can only be
 ; reloaded by a far jump; the others by a plain mov.
 
+; Selectors, as in include/gdt.h.
 KERNEL_CODE	equ 0x08
 KERNEL_DATA	equ 0x10
 KERNEL_STACK	equ 0x18
