@@ -189,6 +189,16 @@ void vga_set_color(enum vga_color fg, enum vga_color bg)
 	active->attr = vga_attr(fg, bg);
 }
 
+uint8_t vga_get_attr(void)
+{
+	return active->attr;
+}
+
+void vga_set_attr(uint8_t attr)
+{
+	active->attr = attr;
+}
+
 void vga_putchar(char c)
 {
 	switch (c) {

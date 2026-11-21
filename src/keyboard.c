@@ -18,7 +18,7 @@
 #define SC_RSHIFT	0x36
 #define SC_CAPSLOCK	0x3A
 #define SC_F1		0x3B
-#define SC_F4		0x3E
+#define SC_F8		0x42
 
 /* Scancode to character, without and with Shift. 0 means no character. */
 static const char keymap[] = {
@@ -58,7 +58,7 @@ static int translate(uint8_t scancode)
 {
 	int shifted = shift_held != 0;
 
-	if (scancode >= SC_F1 && scancode <= SC_F4)
+	if (scancode >= SC_F1 && scancode <= SC_F8)
 		return KEY_F1 + (scancode - SC_F1);
 	if (scancode >= sizeof(keymap))
 		return KEY_NONE;

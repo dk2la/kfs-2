@@ -36,6 +36,8 @@ _start:
 	mov esp, stack_top
 	xor ebp, ebp			; ends the frame chain for backtraces
 	cld				; C code expects the direction flag clear
+	push ebx			; kmain argument 2: Multiboot information
+	push eax			; kmain argument 1: Multiboot magic
 	call gdt_init			; our GDT at 0x800, segment registers reloaded
 	call kmain
 
