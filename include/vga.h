@@ -47,6 +47,13 @@ void	vga_clear(void);
 void	vga_set_color(enum vga_color fg, enum vga_color bg);
 
 /*
+ * The active screen's colours as one attribute byte, to save and restore
+ * them around a message printed in other colours.
+ */
+uint8_t	vga_get_attr(void);
+void	vga_set_attr(uint8_t attr);
+
+/*
  * Write one character at the current position. '\n' starts a new line and
  * '\b' erases the previous character. Past the last row the screen scrolls
  * up by one line. The hardware cursor follows the write position.

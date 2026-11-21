@@ -1,11 +1,14 @@
-# kfs-2
+# kfs-3
 
-A minimal i386 kernel for the 42 project KFS_2 ("GDT & Stack"). It builds on [kfs-1](https://github.com/dk2la/kfs-1): GRUB boots it, it prints `42`, and it keeps the KFS_1 screen, `printk`, keyboard and four virtual screens. KFS_2 adds:
+A minimal i386 kernel for the 42 project KFS_3 ("Memory"). It builds on KFS_1 and KFS_2: GRUB boots it, it prints `42`, and it keeps the screen, `printk`, keyboard, four virtual screens, the GDT at `0x00000800` and the kernel stack dump. KFS_3 adds a memory system:
 
-- its own Global Descriptor Table, at address `0x00000800`, with kernel code, data and stack segments and user code, data and stack segments
-- a tool that prints the kernel stack: bounds, a hexdump and a backtrace
+- paging, with read/write and user/kernel rights on every page
+- a kernel space and a user space
+- functions to create, get and free pages
+- `kmalloc`, `kfree`, `ksize`, `kbrk` for physical memory and `vmalloc`, `vfree`, `vsize`, `vbrk` for virtual memory
+- kernel panics, fatal and not fatal
 
-Only the mandatory part is done; the bonus shell is not. The design and the reasons behind each choice are in [docs/DESIGN.md](docs/DESIGN.md).
+Only the mandatory part is done. [docs/DESIGN.md](docs/DESIGN.md) is the design of the KFS_2 part.
 
 ## Dependencies
 
@@ -56,9 +59,10 @@ To open a graphical window instead: `qemu-system-i386 -cdrom build/kfs.iso`.
 1. The firmware starts GRUB from the ISO.
 2. GRUB reads `grub.cfg` and loads `/boot/kernel.bin`. It recognises the kernel by the Multiboot 1 header (magic `0x1BADB002`) that `linker.ld` places at the start of the code.
 3. GRUB puts the kernel at 1 MiB, switches the CPU to 32-bit protected mode, with a GDT of its own, and jumps to `_start` in `src/boot.s`.
-4. `_start` points `esp` at the kernel's 16 KiB stack, clears `ebp` (the end of the frame chain) and calls `gdt_init`, which installs our GDT at `0x800` and reloads every segment register.
+4. `_start` points `esp` at the kernel's 16 KiB stack, clears `ebp` (the end of the frame chain), pushes the Multiboot magic and information pointer GRUB left in `eax` and `ebx`, and calls `gdt_init`, which installs our GDT at `0x800` and reloads every segment register.
 5. `_start` calls `kmain` in `src/kernel.c`. From here on, all kernel code runs on our segments.
-6. `kmain` prints `42` and the GDT on screen 1, the kernel stack on screen 2, then loops forever reading the keyboard.
+6. `kmain` installs the exception handlers (`idt_init`), then `memory_init` reads the memory map, turns paging on and sets up the heaps.
+7. `kmain` prints `42` and the GDT on screen 1, the kernel stack on screen 2, the memory report on screen 3, then loops forever reading the keyboard.
 
 ## What the kernel shows
 
@@ -66,7 +70,14 @@ To open a graphical window instead: `qemu-system-i386 -cdrom build/kfs.iso`.
 |---|---|
 | `F1` (shown at boot) | `42`, then the GDT dump |
 | `F2` | the kernel stack dump |
-| `F3`, `F4` | free typing |
+| `F3` | the memory report |
+| `F4` | free typing |
+| `F5` | panic demo, not fatal: a double `kfree` |
+| `F6` | panic demo, not fatal: a breakpoint exception |
+| `F7` | panic demo, fatal: reads an address that is not mapped |
+| `F8` | panic demo, fatal: writes to the kernel's read-only code |
+
+The panic demos print on whichever screen is shown. After `F7` or `F8` the kernel is stopped: restart QEMU.
 
 Typing works on every screen, as in KFS_1.
 
@@ -116,18 +127,84 @@ The kernel carries no symbol table, so return addresses are printed as numbers. 
 
 Every character is also written to I/O port `0xE9`. QEMU's debugcon device (`-debugcon file:log`) records it, which is how CI reads what the kernel printed. On real hardware nothing listens on that port.
 
+## Memory
+
+### Address space
+
+| Range | What |
+|---|---|
+| `0x00000000`-`0x3FFFFFFF` | kernel space: pages without the user bit |
+| `0x00000000`-`0x2FFFFFFF` | direct map: all usable RAM mapped at its own address (virtual = physical). The kernel image and the `kmalloc` heap are here |
+| `0x30000000`-`0x3FFFFFFF` | `vmalloc` area: pages mapped on demand to any free frame |
+| `0x40000000`-`0xFFFFFFFF` | user space: pages with the user bit |
+
+RAM above 768 MiB cannot be mapped 1:1 and is not used. Page 0 stays mapped because the GDT is at `0x800`. Nothing runs in ring 3 yet, so the user/kernel split is enforced by `page_map` (a user page is refused in kernel space and the reverse) but not yet exercised by a real user program.
+
+### Physical memory (`src/pmm.c`)
+
+The usable RAM is read from the memory map GRUB passes in the Multiboot information. A bitmap holds one bit per 4 KiB frame. Frames below 1 MiB and the kernel image are reserved. `pmm_alloc_frame` hands out the highest free frame, so that the `kmalloc` heap, which grows upwards from the end of the kernel, meets it as late as possible.
+
+### Paging (`src/paging.c`)
+
+One page directory and 4 KiB pages. `paging_init` builds the direct map, loads `CR3` and sets `CR0.PG` and `CR0.WP`. With `WP` set, a read-only page is read-only for the kernel too: the kernel's code and constants are mapped read-only, and a write there is a page fault.
+
+| Function | Effect |
+|---|---|
+| `page_create(virt, flags)` | take a free frame, clear it, map it at `virt` |
+| `page_get(virt, &phys, &flags)` | tell whether `virt` is mapped, to which physical address, with which rights |
+| `page_map(virt, phys, flags)` | map a page to a given frame |
+| `page_unmap(virt)` | remove a mapping |
+| `page_free(virt)` | remove a mapping and give the frame back |
+
+Rights are `PAGE_WRITE` and `PAGE_USER`. Page tables are created when first needed and given back when their last page is unmapped.
+
+### Allocators (`src/heap.c`)
+
+| Physical | Virtual | Effect |
+|---|---|---|
+| `kmalloc(size)` | `vmalloc(size)` | allocate, aligned on 8 bytes |
+| `kfree(ptr)` | `vfree(ptr)` | free |
+| `ksize(ptr)` | `vsize(ptr)` | usable size of a block |
+| `kbrk(increment)` | `vbrk(increment)` | move the end of the heap, return where it was |
+
+Both heaps use the same first-fit allocator: a list of blocks, each with a header; a free block is split when it is too large and merged with its free neighbours; free memory at the end of the heap is given back. They differ in where a page comes from:
+
+- the `kmalloc` heap is in the direct map. Its addresses are physical addresses and a block is one contiguous piece of RAM. `kbrk` takes the next frame of RAM, and fails if that frame is in use.
+- the `vmalloc` heap is in the `vmalloc` area. `vbrk` maps each new page to any free frame, so a block is contiguous in virtual addresses only.
+
+### Panics (`src/panic.c`, `src/idt.c`)
+
+| Kind | When | Effect |
+|---|---|---|
+| `panic()`, fatal | a CPU exception in kernel code (page fault, general protection fault, ...), no usable memory at boot, not started by a Multiboot loader | prints `KERNEL PANIC`, the message and, for an exception, the registers including `CR2`; disables interrupts and halts |
+| `oops()`, not fatal | a bad or double free, an allocation that cannot be satisfied, a page mapping that is refused, a breakpoint exception | prints `oops (not fatal)` and the message, then returns; the failed call returns an error (`NULL`, `-1`) |
+
+The 32 CPU exceptions have handlers in an IDT (`src/idt.c`, entry points in `src/isr.s`). Hardware interrupts stay disabled; the keyboard is still polled.
+
+### The memory report
+
+Screen `F3` prints the amount of RAM, `CR0` and `CR3`, the layout, then runs each allocator once: a `kmalloc` (its address equals its physical address), a `vmalloc` of three pages (with the frame behind each page), a user page, the rights of five addresses, a write and read back of all three, and the number of free frames after everything is freed.
+
 ## Layout
 
 ```
 Makefile
-linker.ld        places the Multiboot header first, kernel at 1 MiB
+linker.ld        places the Multiboot header first, kernel at 1 MiB,
+                 exports the bounds of the image
 grub.cfg         one menu entry: multiboot /boot/kernel.bin
 src/
   boot.s         Multiboot header, stack, _start: gdt_init, then kmain
+  isr.s          entry points of the CPU exceptions
+  idt.c          the IDT and the exception handler
+  panic.c        panic (fatal) and oops (not fatal)
+  pmm.c          physical frames: bitmap from the Multiboot memory map
+  paging.c       page directory and tables, page_create/get/map/free
+  heap.c         kmalloc and vmalloc heaps
+  memory.c       memory_init and the report of screen F3
   gdt.c          builds the GDT, copies it to 0x800, prints it
   gdt_flush.s    lgdt, far jump, segment register reload
   stack.c        print_kernel_stack and the demo call chain
-  kernel.c       kmain: screens F1 and F2, then the keyboard loop
+  kernel.c       kmain: screens F1 to F3, panic demos, the keyboard loop
   vga.c          screen: write, colours, scrolling, cursor, virtual screens
   keyboard.c     PS/2 keyboard, read by polling
 lib/
@@ -136,6 +213,13 @@ lib/
 include/
   gdt.h          selectors and GDT address
   stack.h
+  memory.h       address space layout, memory_init
+  multiboot.h    what GRUB passes to the kernel
+  pmm.h
+  paging.h       page rights, page functions
+  heap.h         kmalloc, vmalloc and friends
+  panic.h
+  idt.h          saved registers of an exception
   types.h        fixed-width integer types, size_t
   io.h           inb, outb
   stdarg.h       variadic arguments, from compiler builtins
@@ -161,9 +245,9 @@ The kernel is linked with `ld -m elf_i386 -T linker.ld -nostdlib`, so no host li
 
 ## Continuous integration
 
-The kernel is built and checked only on GitHub Actions. Every push and pull request runs `.github/workflows/ci.yml`: it installs the packages above, runs `make` and `make iso`, fails if the ISO is 10 MB or larger, then runs `ci/boot_check.py`.
+Every push and pull request runs `.github/workflows/ci.yml`: it installs the packages above, runs `make` and `make iso`, fails if the ISO is 10 MB or larger, then runs `ci/boot_check.py`.
 
-`ci/boot_check.py` boots the ISO in `qemu-system-i386` without a display and drives it through QMP, QEMU's monitor protocol, on a Unix socket. It waits for `42` on screen, saves `info registers`, a screenshot and the text of screen F1, presses F2 and does the same for screen F2. Everything the kernel prints is captured from port `0xE9`. It then checks:
+`ci/boot_check.py` boots the ISO in `qemu-system-i386` without a display and drives it through QMP, QEMU's monitor protocol, on a Unix socket. It waits for `42` on screen, saves `info registers`, a screenshot and the text of screen F1, presses F2 and F3 and does the same for those screens, then presses F4, F5, F6 and F7 for the panic demos. Everything the kernel prints is captured from port `0xE9`. It then checks:
 
 | Check | What it proves |
 |---|---|
@@ -171,6 +255,10 @@ The kernel is built and checked only on GitHub Actions. Every push and pull requ
 | The printed GDT dump has `GDTR: base=0x00000800 limit=0x0037` and the seven expected rows | The kernel reads back the table it installed |
 | The stack header, `cafebabe`, `deadbeef` and `kfs-2!` are in the output | The hexdump shows the demo frames |
 | The backtrace return addresses, resolved with `nm`, fall in `stack_demo_b`, `stack_demo_a`, `kmain`, `_start` | The `ebp` walk follows the real call chain |
-| Screen F1 shows the GDT dump, screen F2 the stack dump | What the evaluator sees |
+| Screen F1 shows the GDT dump, screen F2 the stack dump, screen F3 the memory report | What the evaluator sees |
+| `info registers` shows `CR0` with `PG` and `WP` set | Paging and write protection are on |
+| The memory report has the RAM size, both spaces, a `kmalloc` whose address equals its physical address, a `vmalloc` whose three pages map to other frames, a user page, the expected rights, `ok` for the write and read back, and `all given back` | Every allocator works and nothing leaks |
+| After `F5` and `F6` the kernel prints two `oops` and still answers | Panics that are not fatal are survived |
+| After `F7` the kernel prints `KERNEL PANIC: page fault reading 0x50000000`, the registers and `System halted.`, and the CPU is halted with interrupts off | A fatal panic prints and stops the kernel |
 
 The ISO, the kernel, the screenshots, the screen text and the logs are uploaded as the `kfs-ci` artifact of the run.

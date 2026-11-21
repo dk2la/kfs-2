@@ -1,6 +1,8 @@
 #ifndef PRINTK_H
 #define PRINTK_H
 
+#include "stdarg.h"
+
 /*
  * Formatted print to the active screen. Every character is also written to
  * I/O port 0xE9 (QEMU debugcon).
@@ -24,5 +26,8 @@
  * Returns the number of characters written.
  */
 int	printk(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* The same, with the arguments already collected in a va_list. */
+int	vprintk(const char *fmt, va_list args);
 
 #endif

@@ -14,6 +14,11 @@ for the kernel to print `42`, then collects into the output directory:
     screen-1.txt    text of screen F1, read from VGA memory
     screen-2.png    screenshot of screen F2 (after `sendkey f2`)
     screen-2.txt    text of screen F2
+    screen-3.png    screenshot of screen F3, the memory report
+    screen-3.txt    text of screen F3
+    panic.png       screenshot after the panic demos (F5, F6, then F7)
+    panic.txt       text of that screen
+    registers-panic.txt   monitor `info registers` after the fatal panic
     debugcon.log    everything the kernel wrote to port 0xE9
 
 Each check prints PASS or FAIL. The exit status is 1 if any check failed.
@@ -244,6 +249,70 @@ def check_stack_dump(checks, log, kernel):
                  names == EXPECTED_BACKTRACE, " <- ".join(names))
 
 
+# ---- KFS_3 checks -------------------------------------------------------
+
+def check_memory(checks, log, registers):
+    """Paging is on and the memory report shows every allocator working."""
+    cr0 = re.search(r"^CR0=([0-9a-f]{8})", registers, re.M)
+    cr0 = int(cr0.group(1), 16) if cr0 else 0
+    checks.check("CR0 has paging (PG) and write protect (WP) set",
+                 cr0 & 0x80010000 == 0x80010000, "CR0=%08x" % cr0)
+    checks.check("kernel reports paging and write protect on",
+                 re.search(r"^CR0=0x[0-9a-f]{8} paging on, write protect on", log, re.M)
+                 is not None)
+    checks.check("RAM found from the Multiboot memory map",
+                 re.search(r"^RAM: \d+ MiB usable = \d+ frames of 4 KiB, \d+ free", log, re.M)
+                 is not None)
+    checks.check("kernel and user space are defined",
+                 "kernel space 0x00000000-0x3fffffff" in log
+                 and "user space   0x40000000-0xffffffff" in log)
+
+    k = re.search(r"^kmalloc\(100\) = 0x([0-9a-f]{8}) ksize=(\d+) physical=0x([0-9a-f]{8})",
+                  log, re.M)
+    checks.check("kmalloc returns physical memory (virtual == physical)",
+                 k is not None and k.group(1) == k.group(3) and int(k.group(2)) >= 100)
+    v = re.search(r"^vmalloc\(10000\) = 0x(3[0-9a-f]{7}) vsize=(\d+)", log, re.M)
+    checks.check("vmalloc returns memory in the vmalloc area",
+                 v is not None and int(v.group(2)) >= 10000)
+    pages = re.search(r"^  its pages:((?: 0x[0-9a-f]{8}>0x[0-9a-f]{8})+)$", log, re.M)
+    pairs = re.findall(r"0x([0-9a-f]{8})>0x([0-9a-f]{8})", pages.group(1)) if pages else []
+    checks.check("vmalloc pages are mapped to frames elsewhere in RAM",
+                 len(pairs) == 3 and all(virt != phys for virt, phys in pairs))
+    checks.check("a user page was created at 0x40000000",
+                 re.search(r"^page_create\(user\) = 0x40000000 > frame 0x[0-9a-f]{8}", log, re.M)
+                 is not None)
+    checks.check("rights: kernel code read-only, heaps kernel read/write, user page user",
+                 re.search(r"0x00100000 P - -, 0x[0-9a-f]{8} P W -", log) is not None
+                 and re.search(r"0x3[0-9a-f]{7} P W -, 0x40000000 P W U", log) is not None
+                 and "0x50000000 not mapped" in log)
+    checks.check("memory can be written and read back",
+                 "write and read back (kmalloc, vmalloc, user page): ok" in log)
+    checks.check("every frame is given back after the frees",
+                 re.search(r"^after kfree, vfree, page_free: \d+ frames free \(all given back\)",
+                           log, re.M) is not None)
+
+
+def check_panics(checks, log, registers, screen):
+    """F5 and F6 are survived, F7 stops the kernel on a page fault."""
+    oops_free = log.find("oops (not fatal): kmalloc heap: double free of 0x")
+    oops_trap = log.find("oops (not fatal): breakpoint exception at 0x")
+    fatal = log.find("KERNEL PANIC: page fault reading 0x50000000: page not mapped (kernel mode)")
+    checks.check("F5: a double free is reported and survived", oops_free >= 0)
+    checks.check("F6: a breakpoint exception is reported and survived",
+                 oops_trap > oops_free >= 0)
+    checks.check("F7: a page fault is a fatal panic", fatal > oops_trap >= 0)
+    checks.check("the panic prints the registers and halts",
+                 re.search(r"^ cr0=[0-9a-f]{8} cr2=50000000 cr3=[0-9a-f]{8}$", log, re.M)
+                 is not None and log.rstrip().endswith("System halted."))
+    # EFLAGS bit 9 is the interrupt flag.
+    halted = re.search(r"^EIP=\S+ EFL=([0-9a-f]{8}) .* HLT=1\s*$", registers, re.M)
+    checks.check("the CPU is halted with interrupts off",
+                 halted is not None and int(halted.group(1), 16) & 0x200 == 0)
+    checks.check("the panic is on screen",
+                 any(line.startswith("KERNEL PANIC: page fault") for line in screen)
+                 and any(line.startswith("System halted.") for line in screen))
+
+
 class Checks:
     def __init__(self):
         self.failed = 0
@@ -295,6 +364,20 @@ def main():
         monitor.human("sendkey f2")
         time.sleep(1)
         screen2 = save_screen(monitor, out_dir, "screen-2")
+        monitor.human("sendkey f3")
+        time.sleep(1)
+        screen3 = save_screen(monitor, out_dir, "screen-3")
+
+        # Panic demos, on the free screen: two that the kernel survives,
+        # then a fatal one.
+        for key in ("f4", "f5", "f6", "f7"):
+            monitor.human("sendkey " + key)
+            time.sleep(1)
+        wait_for_quiet(os.path.join(out_dir, "debugcon.log"))
+        panic_screen = save_screen(monitor, out_dir, "panic")
+        panic_registers = monitor.human("info registers")
+        with open(os.path.join(out_dir, "registers-panic.txt"), "w") as f:
+            f.write(panic_registers)
     finally:
         if monitor:
             monitor.quit()
@@ -306,6 +389,8 @@ def main():
     print("---- registers ----\n" + registers)
     print("---- screen F1 ----\n" + "\n".join(screen1))
     print("---- screen F2 ----\n" + "\n".join(screen2))
+    print("---- screen F3 ----\n" + "\n".join(screen3))
+    print("---- screen after the panic demos ----\n" + "\n".join(panic_screen))
 
     with open(os.path.join(out_dir, "debugcon.log"), encoding="latin-1") as f:
         log = f.read()
@@ -319,6 +404,12 @@ def main():
     checks.check("screen F2 shows the stack dump",
                  any(line.startswith("kernel stack:") for line in screen2)
                  and any(line.startswith("backtrace") for line in screen2))
+
+    checks.check("screen F3 shows the memory report",
+                 any(line.startswith("RAM: ") for line in screen3)
+                 and any(line.startswith("vmalloc(") for line in screen3))
+    check_memory(checks, log, registers)
+    check_panics(checks, log, panic_registers, panic_screen)
 
     sys.exit(1 if checks.failed else 0)
 

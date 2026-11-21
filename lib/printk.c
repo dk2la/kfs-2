@@ -162,13 +162,11 @@ static const char *parse_field(const char *fmt, struct field *f)
 	return fmt;
 }
 
-int printk(const char *fmt, ...)
+int vprintk(const char *fmt, va_list args)
 {
-	va_list args;
 	struct field field;
 	int count = 0;
 
-	va_start(args, fmt);
 	while (*fmt) {
 		if (*fmt != '%') {
 			put_char(*fmt++);
@@ -184,6 +182,16 @@ int printk(const char *fmt, ...)
 		}
 		count += print_conversion(*fmt++, &field, &args);
 	}
+	return count;
+}
+
+int printk(const char *fmt, ...)
+{
+	va_list args;
+	int count;
+
+	va_start(args, fmt);
+	count = vprintk(fmt, args);
 	va_end(args);
 	return count;
 }

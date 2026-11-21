@@ -14,6 +14,10 @@
 #define KEY_F2		0x101
 #define KEY_F3		0x102
 #define KEY_F4		0x103
+#define KEY_F5		0x104
+#define KEY_F6		0x105
+#define KEY_F7		0x106
+#define KEY_F8		0x107
 
 /* Return the next key press, or KEY_NONE if nothing is waiting. */
 int	keyboard_poll(void);

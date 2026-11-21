@@ -30,11 +30,14 @@ GRUB_FLAGS	= -d $(GRUB_DIR) --install-modules="$(GRUB_MODULES)" \
 		  --locales="" --themes="" --fonts=""
 
 C_SRCS		= src/kernel.c src/vga.c src/keyboard.c src/gdt.c src/stack.c \
-		  lib/string.c lib/printk.c
-ASM_SRCS	= src/boot.s src/gdt_flush.s
+		  src/idt.c src/panic.c src/pmm.c src/paging.c src/heap.c \
+		  src/memory.c lib/string.c lib/printk.c
+ASM_SRCS	= src/boot.s src/gdt_flush.s src/isr.s
 HEADERS		= include/types.h include/vga.h include/string.h include/io.h \
 		  include/stdarg.h include/printk.h include/keyboard.h \
-		  include/gdt.h include/stack.h
+		  include/gdt.h include/stack.h include/idt.h include/panic.h \
+		  include/memory.h include/multiboot.h include/pmm.h \
+		  include/paging.h include/heap.h
 
 OBJS		= $(ASM_SRCS:%.s=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
