@@ -19,12 +19,24 @@ sudo apt install make nasm gcc gcc-multilib grub-pc-bin grub-common xorriso mtoo
 | `grub-pc-bin`, `grub-common`, `xorriso`, `mtools` | building the bootable ISO with `grub-mkrescue` |
 | `qemu-system-x86` | running the kernel |
 
+### Vagrant
+
+On a machine without these packages, the `Vagrantfile` creates an Ubuntu VM that has them (it needs Vagrant and VirtualBox):
+
+```sh
+vagrant up
+vagrant ssh
+make run
+```
+
+The project directory is shared with the VM as `/vagrant`, where the shell starts.
+
 ## Build and run
 
 | Command | Effect |
 |---|---|
-| `make` | Compile and link `build/kernel.bin` |
-| `make iso` | Build the bootable image `build/kfs.iso` |
+| `make` | Compile and link `build/kernel.bin`, then build the bootable image `build/kfs.iso` |
+| `make iso` | Same as `make` |
 | `make run` | Boot the ISO in QEMU, with the emulated screen drawn as text in the terminal |
 | `make clean` | Remove object files |
 | `make fclean` | Remove all build output |
