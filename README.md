@@ -22,6 +22,18 @@ sudo apt install make nasm gcc gcc-multilib grub-pc-bin grub-common xorriso mtoo
 | `grub-pc-bin`, `grub-common`, `xorriso`, `mtools` | building the bootable ISO with `grub-mkrescue` |
 | `qemu-system-x86` | running the kernel |
 
+### Vagrant
+
+On a machine without these packages, the `Vagrantfile` creates an Ubuntu VM that has them (it needs Vagrant and VirtualBox):
+
+```sh
+vagrant up
+vagrant ssh
+make run
+```
+
+The project directory is shared with the VM as `/vagrant`, where the shell starts.
+
 ## Build and run
 
 | Command | Effect |
