@@ -15,20 +15,26 @@ GRUB_MKRESCUE	= grub-mkrescue
 QEMU		= qemu-system-i386
 
 CFLAGS		= -m32 -std=gnu99 -ffreestanding -fno-builtin -fno-stack-protector \
-		  -fno-pie -nostdlib -nodefaultlibs -Wall -Wextra -Werror -Iinclude
+		  -fno-pie -nostdlib -nodefaultlibs -fno-omit-frame-pointer \
+		  -Wall -Wextra -Werror -Iinclude
 ASFLAGS		= -f elf32
 LDFLAGS		= -m elf_i386 -T linker.ld -nostdlib
 
 # Only the GRUB modules needed to find and boot the kernel from a CD, so the
-# ISO stays far below the 10 MB limit.
+# ISO stays far below the 10 MB limit. GRUB_DIR restricts the image to BIOS
+# (i386-pc): where GRUB's EFI files are also installed, grub-mkrescue would
+# otherwise build an EFI image too, which has no biosdisk module.
+GRUB_DIR	= /usr/lib/grub/i386-pc
 GRUB_MODULES	= multiboot normal iso9660 biosdisk
-GRUB_FLAGS	= --install-modules="$(GRUB_MODULES)" --locales="" --themes="" \
-		  --fonts=""
+GRUB_FLAGS	= -d $(GRUB_DIR) --install-modules="$(GRUB_MODULES)" \
+		  --locales="" --themes="" --fonts=""
 
-C_SRCS		= src/kernel.c src/vga.c src/keyboard.c lib/string.c lib/printk.c
-ASM_SRCS	= src/boot.s
+C_SRCS		= src/kernel.c src/vga.c src/keyboard.c src/gdt.c src/stack.c \
+		  lib/string.c lib/printk.c
+ASM_SRCS	= src/boot.s src/gdt_flush.s
 HEADERS		= include/types.h include/vga.h include/string.h include/io.h \
-		  include/stdarg.h include/printk.h include/keyboard.h
+		  include/stdarg.h include/printk.h include/keyboard.h \
+		  include/gdt.h include/stack.h
 
 OBJS		= $(ASM_SRCS:%.s=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
