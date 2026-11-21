@@ -13,7 +13,11 @@
  *   %p  pointer, as 0x followed by eight hexadecimal digits
  *   %%  a literal percent sign
  *
- * Widths, flags and length modifiers (%5d, %08x, %ld) are not supported.
+ * A minimum field width may be given, with the flags '0' (pad numbers with
+ * zeros) and '-' (pad on the right): %08x, %4u, %-10s. Length modifiers
+ * (%ld) are not supported.
+ *
+ * Every character is also written to I/O port 0xE9, QEMU's debug console.
  *
  * Returns the number of characters written.
  */

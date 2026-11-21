@@ -1,6 +1,6 @@
 # kfs-1
 
-A minimal i386 kernel for the 42 project KFS_1 ("Grub, boot and screen"). GRUB boots it and it prints `42` on the screen. All five bonuses are included: scrolling and cursor, colours, `printk`, keyboard input and multiple screens.
+A minimal i386 kernel for the 42 project KFS_2 ("GDT & Stack"), built on the KFS_1 kernel. GRUB boots it; the kernel loads its own Global Descriptor Table at `0x00000800` and prints it on screen F1, and prints the kernel stack (bounds, hexdump, call chain) on screen F2. Screens F3 and F4 are free for typing. Scrolling, cursor, colours, `printk` and keyboard input come from KFS_1.
 
 The design and the reasons behind each choice are in [docs/DESIGN.md](docs/DESIGN.md).
 

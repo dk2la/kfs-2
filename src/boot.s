@@ -19,6 +19,8 @@ STACK_SIZE	equ 16384
 
 section .bss
 alignb 16
+global stack_bottom
+global stack_top
 stack_bottom:
 	resb STACK_SIZE
 stack_top:
@@ -26,11 +28,14 @@ stack_top:
 section .text
 bits 32
 global _start
+extern gdt_init
 extern kmain
 
 _start:
 	mov esp, stack_top
+	xor ebp, ebp			; end of the frame chain for backtraces
 	cld				; C code expects the direction flag clear
+	call gdt_init			; from here on we run on our own segments
 	call kmain
 
 	; kmain returned: there is nothing left to run. Stop here for good.
