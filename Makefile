@@ -32,7 +32,7 @@ HEADERS		= include/types.h include/vga.h include/string.h include/io.h \
 
 OBJS		= $(ASM_SRCS:%.s=$(BUILD)/%.o) $(C_SRCS:%.c=$(BUILD)/%.o)
 
-all: $(KERNEL)
+all: $(ISO)
 
 $(KERNEL): $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
